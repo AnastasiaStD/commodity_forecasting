@@ -13,6 +13,16 @@ ML Forecaster - Модуль машинного обучения для прог
 - SGD
 - Random Forest
 - AdaBoost
+
+Использование для прогноза на новых данных:
+    # Вариант 1: Загрузка модели и прогноз
+    forecaster = MLForecaster.load('saved_models/sugar')
+    predictions = forecaster.predict_from_file('data/future_features.xlsx')
+    
+    # Вариант 2: Через конфиг
+    forecaster = MLForecaster(config='configs/sugar.yaml')
+    forecaster.load_model()
+    predictions = forecaster.predict_from_file()  # использует forecast_file из конфига
 """
 
 import numpy as np
@@ -25,6 +35,7 @@ import warnings
 import joblib
 import yaml
 from pathlib import Path
+from datetime import datetime
 
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.preprocessing import StandardScaler
@@ -81,8 +92,10 @@ class MLForecaster:
         self.data = None
         self.is_fitted = False
         
+
         self._set_seed()
         
+
         os.makedirs(self.config['results_dir'], exist_ok=True)
         os.makedirs(self.config['models_dir'], exist_ok=True)
     
@@ -98,6 +111,7 @@ class MLForecaster:
         
         defaults = {
             'input_file': 'data/input_data.xlsx',
+            'forecast_file': '',  # Файл с данными для прогноза (фичи без таргета)
             'date_column': 'Date',
             'target_column': 'Price',
             'features': [],
@@ -155,6 +169,7 @@ class MLForecaster:
         date_col = self.config['date_column']
         target_col = self.config['target_column']
         
+        # Базовые признаки
         if self.config['features']:
             base_cols = self.config['features']
         else:
@@ -163,6 +178,7 @@ class MLForecaster:
         
         print(f"Базовые признаки ({len(base_cols)}): {base_cols}")
         
+        # Создание лагов и MA
         if self.config['create_features']:
             print(f"Создание лагов: {self.config['lags']}")
             for col in base_cols:
@@ -174,6 +190,7 @@ class MLForecaster:
                 for window in self.config['ma_windows']:
                     self.data[f"{col}_ma_{window}"] = self.data[col].rolling(window=window).mean()
         
+        # Все признаки
         all_features = [col for col in self.data.columns 
                        if col not in [date_col, target_col]]
         
@@ -189,20 +206,22 @@ class MLForecaster:
         all_features = [col for col in self.data.columns 
                        if col not in [date_col, target_col]]
         
+        # Данные для отбора (без NaN)
         df_valid = self.data.dropna(subset=all_features + [target_col])
         X = df_valid[all_features]
         y = df_valid[target_col]
         
         if self.config['expert_features']:
             # Экспертный выбор
-            print("Режим: ЭКСПЕРТНЫЙ ВЫБОР (заданные извне желаемые параметры)")
+            print("Режим: ЭКСПЕРТНЫЙ ВЫБОР")
             missing = [f for f in self.config['expert_features'] if f not in all_features]
             if missing:
                 raise ValueError(f"Признаки не найдены: {missing}")
             
             selected = self.config['expert_features'][:self.config['max_features']]
         else:
-            print("Режим: АВТОМАТИЧЕСКИЙ ОТБОР (по корреляции)")
+            # Автоматический отбор по корреляции
+            print("Режим: АВТОМАТИЧЕСКИЙ ОТБОР")
             correlations = {}
             for col in all_features:
                 valid_mask = X[col].notna() & y.notna()
@@ -213,11 +232,11 @@ class MLForecaster:
             corr_df['abs_correlation'] = corr_df['correlation'].abs()
             corr_df = corr_df.sort_values('abs_correlation', ascending=False)
             
-  
+            # Отбор по порогу
             threshold = self.config['correlation_threshold']
             selected = corr_df[corr_df['abs_correlation'] >= threshold].index.tolist()
             
-
+            # Ограничение количества
             max_feat = self.config['max_features']
             if len(selected) > max_feat:
                 selected = corr_df.head(max_feat).index.tolist()
@@ -236,6 +255,7 @@ class MLForecaster:
         date_col = self.config['date_column']
         target_col = self.config['target_column']
         
+        # Удаляем строки с NaN в признаках
         df = self.data[[date_col, target_col] + self.feature_cols].dropna()
         
         n = len(df)
@@ -252,6 +272,7 @@ class MLForecaster:
         print(f"  Val: {val_size} ({100*val_size/n:.1f}%)")
         print(f"  Test: {test_size} ({100*test_size/n:.1f}%)")
         
+        # Нормализация
         self.scaler = StandardScaler()
         
         self.X_train = self.scaler.fit_transform(self.train_df[self.feature_cols])
@@ -289,6 +310,7 @@ class MLForecaster:
             if model is not None:
                 self.models[model_name] = model
                 
+                # Предсказания
                 train_pred = model.predict(self.X_train)
                 val_pred = model.predict(self.X_val)
                 test_pred = model.predict(self.X_test)
@@ -299,6 +321,7 @@ class MLForecaster:
                     'test_pred': test_pred
                 }
                 
+                # Метрики
                 self.metrics[model_name] = {
                     'mae': mean_absolute_error(self.y_test, test_pred),
                     'rmse': np.sqrt(mean_squared_error(self.y_test, test_pred)),
@@ -312,7 +335,7 @@ class MLForecaster:
         
         self.is_fitted = True
         self.best_model = min(self.metrics, key=lambda m: self.metrics[m]['mae'])
-        print(f"\nЛучшая модель: {self.best_model} (MAE = {self.metrics[self.best_model]['mae']:.4f})")
+        print(f"\n🏆 Лучшая модель: {self.best_model} (MAE = {self.metrics[self.best_model]['mae']:.4f})")
         
         return self
     
@@ -550,17 +573,19 @@ class MLForecaster:
         return self.models[model_name].predict(X_scaled)
     
     def save_results(self):
-        """Сохранение результатов"""
+        """Сохранение результатов и моделей для последующего прогноза"""
         results_dir = self.config['results_dir']
         models_dir = self.config['models_dir']
         
         print("\nСохранение результатов...")
         
+        # Метрики
         metrics_df = pd.DataFrame(self.metrics).T
         metrics_df.index.name = 'Model'
         metrics_df = metrics_df.sort_values('mae')
         metrics_df.to_excel(os.path.join(results_dir, 'ml_metrics.xlsx'))
         
+        # Прогнозы
         preds_df = pd.DataFrame({
             'Date': self.test_dates,
             'Actual': self.y_test
@@ -569,26 +594,56 @@ class MLForecaster:
             preds_df[f'{model_name}_pred'] = res['test_pred']
         preds_df.to_excel(os.path.join(results_dir, 'ml_predictions.xlsx'), index=False)
         
+        # Модели
         for model_name, model in self.models.items():
             path = os.path.join(models_dir, f'ml_{model_name}.pkl')
             joblib.dump(model, path)
         
+        # Scaler
         joblib.dump(self.scaler, os.path.join(models_dir, 'ml_scaler.pkl'))
-        joblib.dump({
+        
+        # Метаданные для прогноза (ВАЖНО!)
+        meta = {
             'feature_cols': self.feature_cols,
             'config': self.config,
-            'best_model': self.best_model
-        }, os.path.join(models_dir, 'ml_meta.pkl'))
+            'best_model': self.best_model,
+            'metrics': self.metrics,
+            # Информация для генерации признаков
+            'base_features': self._get_base_features(),
+            'created_at': datetime.now().isoformat()
+        }
+        joblib.dump(meta, os.path.join(models_dir, 'ml_meta.pkl'))
         
         print(f"  Результаты: {results_dir}")
         print(f"  Модели: {models_dir}")
+        print(f"  Признаки для прогноза ({len(self.feature_cols)}): {self.feature_cols}")
         
         return self
+    
+    def _get_base_features(self):
+        """Получить список базовых признаков (без лагов и MA)"""
+        date_col = self.config['date_column']
+        target_col = self.config['target_column']
+        
+        if self.config['features']:
+            return self.config['features']
+        else:
+            # Определяем базовые признаки из данных
+            base = []
+            for col in self.data.columns:
+                if col in [date_col, target_col]:
+                    continue
+                # Пропускаем сгенерированные признаки
+                if '_lag_' in col or '_ma_' in col:
+                    continue
+                base.append(col)
+            return base
     
     def plot_results(self):
         """Визуализация результатов"""
         results_dir = self.config['results_dir']
         
+        # 1. Все прогнозы
         plt.figure(figsize=(14, 7))
         plt.plot(self.test_dates, self.y_test, 'b-', label='Факт', linewidth=2)
         
@@ -608,6 +663,7 @@ class MLForecaster:
         plt.savefig(os.path.join(results_dir, 'ml_all_predictions.png'), dpi=150)
         plt.close()
         
+        # 2. Сравнение метрик
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         models = list(self.metrics.keys())
         
@@ -642,7 +698,342 @@ class MLForecaster:
                   f"{m['mape']:<10.2f} {m['r2']:<10.4f}")
         
         print("-"*60)
-        print(f"\nЛучшая модель: {self.best_model}")
+        print(f"\n🏆 Лучшая модель: {self.best_model}")
         print(f"   MAE: {self.metrics[self.best_model]['mae']:.3f}")
         
         return self
+    
+    # =========================================================================
+    #                    МЕТОДЫ ДЛЯ ПРОГНОЗА НА НОВЫХ ДАННЫХ
+    # =========================================================================
+    
+    @classmethod
+    def load(cls, models_dir):
+        """
+        Загрузка сохраненной модели из директории.
+        
+        Parameters:
+        -----------
+        models_dir : str
+            Путь к директории с сохраненными моделями
+        
+        Returns:
+        --------
+        MLForecaster с загруженными моделями
+        
+        Example:
+        --------
+        >>> forecaster = MLForecaster.load('saved_models/sugar')
+        >>> predictions = forecaster.predict_from_file('data/future.xlsx')
+        """
+        instance = cls.__new__(cls)
+        
+        # Загрузка метаданных
+        meta_path = os.path.join(models_dir, 'ml_meta.pkl')
+        if not os.path.exists(meta_path):
+            raise FileNotFoundError(f"Метаданные не найдены: {meta_path}")
+        
+        meta = joblib.load(meta_path)
+        instance.config = meta['config']
+        instance.feature_cols = meta['feature_cols']
+        instance.best_model = meta['best_model']
+        instance.metrics = meta.get('metrics', {})
+        instance.base_features = meta.get('base_features', [])
+        
+        # Загрузка scaler
+        scaler_path = os.path.join(models_dir, 'ml_scaler.pkl')
+        if os.path.exists(scaler_path):
+            instance.scaler = joblib.load(scaler_path)
+        else:
+            instance.scaler = None
+        
+        # Загрузка моделей
+        instance.models = {}
+        for model_name in cls.AVAILABLE_MODELS:
+            model_path = os.path.join(models_dir, f'ml_{model_name}.pkl')
+            if os.path.exists(model_path):
+                instance.models[model_name] = joblib.load(model_path)
+        
+        instance.is_fitted = True
+        instance.results = {}
+        instance.data = None
+        
+        print(f"Модель загружена из {models_dir}")
+        print(f"  Лучшая модель: {instance.best_model}")
+        print(f"  Доступные модели: {list(instance.models.keys())}")
+        print(f"  Признаки ({len(instance.feature_cols)}): {instance.feature_cols[:5]}...")
+        
+        return instance
+    
+    def load_model(self, models_dir=None):
+        """
+        Загрузка сохраненной модели в текущий экземпляр.
+        
+        Parameters:
+        -----------
+        models_dir : str, optional
+            Путь к директории. Если не указан, берется из config['models_dir']
+        """
+        models_dir = models_dir or self.config['models_dir']
+        
+        # Загрузка метаданных
+        meta_path = os.path.join(models_dir, 'ml_meta.pkl')
+        if not os.path.exists(meta_path):
+            raise FileNotFoundError(f"Метаданные не найдены: {meta_path}")
+        
+        meta = joblib.load(meta_path)
+        self.feature_cols = meta['feature_cols']
+        self.best_model = meta['best_model']
+        self.metrics = meta.get('metrics', {})
+        self.base_features = meta.get('base_features', [])
+        
+        # Обновляем конфиг из сохраненного (кроме путей)
+        saved_config = meta['config']
+        for key in ['lags', 'ma_windows', 'create_features', 'date_column', 'target_column']:
+            if key in saved_config:
+                self.config[key] = saved_config[key]
+        
+        # Загрузка scaler
+        scaler_path = os.path.join(models_dir, 'ml_scaler.pkl')
+        if os.path.exists(scaler_path):
+            self.scaler = joblib.load(scaler_path)
+        
+        # Загрузка моделей
+        self.models = {}
+        for model_name in self.AVAILABLE_MODELS:
+            model_path = os.path.join(models_dir, f'ml_{model_name}.pkl')
+            if os.path.exists(model_path):
+                self.models[model_name] = joblib.load(model_path)
+        
+        self.is_fitted = True
+        
+        print(f"Модель загружена из {models_dir}")
+        print(f"  Лучшая модель: {self.best_model}")
+        print(f"  Признаки: {len(self.feature_cols)}")
+        
+        return self
+    
+    def predict_from_file(self, filepath=None, model_name=None, save_results=True):
+        """
+        Прогноз на новых данных из файла.
+        
+        Parameters:
+        -----------
+        filepath : str, optional
+            Путь к Excel файлу с признаками.
+            Если не указан, берется из config['forecast_file']
+        model_name : str, optional
+            Какую модель использовать. По умолчанию best_model
+        save_results : bool
+            Сохранять ли результаты в Excel
+        
+        Returns:
+        --------
+        pd.DataFrame с прогнозами
+        
+        Example:
+        --------
+        >>> forecaster = MLForecaster.load('saved_models/sugar')
+        >>> predictions = forecaster.predict_from_file('data/future_features.xlsx')
+        >>> print(predictions)
+        """
+        if not self.is_fitted:
+            raise RuntimeError("Модель не обучена и не загружена. Используйте fit() или load()")
+        
+        filepath = filepath or self.config.get('forecast_file')
+        if not filepath:
+            raise ValueError("Укажите путь к файлу с данными для прогноза")
+        
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Файл не найден: {filepath}")
+        
+        model_name = model_name or self.best_model
+        if model_name not in self.models:
+            raise ValueError(f"Модель '{model_name}' не найдена. Доступны: {list(self.models.keys())}")
+        
+        print(f"\n{'='*60}")
+        print(f"ПРОГНОЗ НА НОВЫХ ДАННЫХ")
+        print(f"{'='*60}")
+        print(f"Файл: {filepath}")
+        print(f"Модель: {model_name}")
+        
+        # Загрузка данных
+        df = pd.read_excel(filepath)
+        print(f"Загружено строк: {len(df)}")
+        
+        # Подготовка признаков
+        X_forecast, dates = self._prepare_forecast_features(df)
+        
+        # Прогноз
+        model = self.models[model_name]
+        predictions = model.predict(X_forecast)
+        
+        # Формирование результата
+        date_col = self.config['date_column']
+        target_col = self.config['target_column']
+        
+        result_df = pd.DataFrame({
+            date_col: dates,
+            f'{target_col}_predicted': predictions
+        })
+        
+        # Добавляем прогнозы от всех моделей
+        for name, mdl in self.models.items():
+            if name != model_name:
+                result_df[f'{target_col}_pred_{name}'] = mdl.predict(X_forecast)
+        
+        print(f"\nПрогноз ({len(predictions)} значений):")
+        print(result_df.head(10).to_string(index=False))
+        
+        # Сохранение
+        if save_results:
+            results_dir = self.config['results_dir']
+            os.makedirs(results_dir, exist_ok=True)
+            
+            output_path = os.path.join(results_dir, 'ml_forecast_results.xlsx')
+            result_df.to_excel(output_path, index=False)
+            print(f"\nРезультаты сохранены: {output_path}")
+            
+            # График
+            self._plot_forecast(result_df, model_name)
+        
+        return result_df
+    
+    def _prepare_forecast_features(self, df):
+        """
+        Подготовка признаков для прогноза.
+        
+        Генерирует лаги и MA если они были использованы при обучении.
+        """
+        date_col = self.config['date_column']
+        target_col = self.config['target_column']
+        
+        # Преобразование даты
+        if date_col in df.columns:
+            df[date_col] = pd.to_datetime(df[date_col])
+            dates = df[date_col].values
+        else:
+            dates = np.arange(len(df))
+        
+        # Проверка наличия базовых признаков
+        base_features = getattr(self, 'base_features', [])
+        if not base_features:
+            # Пытаемся определить из feature_cols
+            base_features = [col for col in self.feature_cols 
+                           if '_lag_' not in col and '_ma_' not in col]
+        
+        missing = [f for f in base_features if f not in df.columns]
+        if missing:
+            raise ValueError(f"В файле отсутствуют признаки: {missing}")
+        
+        # Генерация лагов и MA если нужно
+        if self.config.get('create_features', False):
+            print("Генерация лагов и скользящих средних...")
+            
+            for col in base_features:
+                # Лаги
+                for lag in self.config.get('lags', []):
+                    col_name = f"{col}_lag_{lag}"
+                    if col_name in self.feature_cols:
+                        df[col_name] = df[col].shift(lag)
+                
+                # MA
+                for window in self.config.get('ma_windows', []):
+                    col_name = f"{col}_ma_{window}"
+                    if col_name in self.feature_cols:
+                        df[col_name] = df[col].rolling(window=window).mean()
+        
+        # Проверка всех необходимых признаков
+        missing_features = [f for f in self.feature_cols if f not in df.columns]
+        if missing_features:
+            print(f"ВНИМАНИЕ: Не все признаки найдены. Отсутствуют: {missing_features}")
+            # Заполняем отсутствующие нулями (с предупреждением)
+            for f in missing_features:
+                df[f] = 0
+        
+        # Удаление строк с NaN (из-за лагов)
+        df_clean = df.dropna(subset=[f for f in self.feature_cols if f in df.columns])
+        
+        if len(df_clean) == 0:
+            raise ValueError("После удаления NaN не осталось данных. "
+                           "Возможно, недостаточно исторических данных для генерации лагов.")
+        
+        if len(df_clean) < len(df):
+            print(f"  Удалено строк с NaN: {len(df) - len(df_clean)}")
+            dates = df_clean[date_col].values if date_col in df_clean.columns else dates[:len(df_clean)]
+        
+        # Извлечение признаков
+        X = df_clean[self.feature_cols].values
+        
+        # Нормализация
+        if self.scaler is not None:
+            X = self.scaler.transform(X)
+        
+        print(f"  Подготовлено признаков: {X.shape[1]}")
+        print(f"  Строк для прогноза: {X.shape[0]}")
+        
+        return X, dates
+    
+    def _plot_forecast(self, result_df, model_name):
+        """График прогноза"""
+        results_dir = self.config['results_dir']
+        date_col = self.config['date_column']
+        target_col = self.config['target_column']
+        
+        plt.figure(figsize=(14, 6))
+        
+        # Основной прогноз
+        pred_col = f'{target_col}_predicted'
+        plt.plot(result_df[date_col], result_df[pred_col], 
+                'b-', linewidth=2, marker='o', markersize=4,
+                label=f'Прогноз ({model_name})')
+        
+        plt.title(f'Прогноз {target_col} (модель: {model_name})', fontsize=14, fontweight='bold')
+        plt.xlabel('Дата', fontsize=12)
+        plt.ylabel(target_col, fontsize=12)
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        plt.savefig(os.path.join(results_dir, 'ml_forecast_plot.png'), dpi=150)
+        plt.close()
+        
+        print(f"График сохранен: {results_dir}/ml_forecast_plot.png")
+    
+    def get_feature_importance(self, model_name=None):
+        """
+        Получение важности признаков.
+        
+        Parameters:
+        -----------
+        model_name : str, optional
+            Какую модель использовать
+        
+        Returns:
+        --------
+        pd.DataFrame с важностью признаков
+        """
+        model_name = model_name or self.best_model
+        model = self.models.get(model_name)
+        
+        if model is None:
+            raise ValueError(f"Модель '{model_name}' не найдена")
+        
+        # Получение важности (зависит от типа модели)
+        importance = None
+        
+        if hasattr(model, 'feature_importances_'):
+            importance = model.feature_importances_
+        elif hasattr(model, 'coef_'):
+            importance = np.abs(model.coef_)
+        
+        if importance is None:
+            print(f"Модель {model_name} не поддерживает feature importance")
+            return None
+        
+        result = pd.DataFrame({
+            'feature': self.feature_cols,
+            'importance': importance
+        }).sort_values('importance', ascending=False)
+        
+        return result

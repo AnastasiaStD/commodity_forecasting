@@ -15,7 +15,7 @@ with open("requirements.txt", "r", encoding="utf-8") as f:
 setup(
     name="commodity-forecasting",
     version="1.0.0",
-    author="Commodity Forecasting Team",
+    author="AX",
     author_email="anstolyarowa@yandex.ru",
     description="Библиотека для прогнозирования цен на сырьевые товары",
     long_description=long_description,
