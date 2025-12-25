@@ -81,10 +81,8 @@ class MLForecaster:
         self.data = None
         self.is_fitted = False
         
-        # Установка random seed
         self._set_seed()
         
-        # Создание директорий
         os.makedirs(self.config['results_dir'], exist_ok=True)
         os.makedirs(self.config['models_dir'], exist_ok=True)
     
@@ -98,7 +96,6 @@ class MLForecaster:
         else:
             cfg = {}
         
-        # Значения по умолчанию
         defaults = {
             'input_file': 'data/input_data.xlsx',
             'date_column': 'Date',
@@ -158,7 +155,6 @@ class MLForecaster:
         date_col = self.config['date_column']
         target_col = self.config['target_column']
         
-        # Базовые признаки
         if self.config['features']:
             base_cols = self.config['features']
         else:
@@ -167,7 +163,6 @@ class MLForecaster:
         
         print(f"Базовые признаки ({len(base_cols)}): {base_cols}")
         
-        # Создание лагов и MA
         if self.config['create_features']:
             print(f"Создание лагов: {self.config['lags']}")
             for col in base_cols:
@@ -179,7 +174,6 @@ class MLForecaster:
                 for window in self.config['ma_windows']:
                     self.data[f"{col}_ma_{window}"] = self.data[col].rolling(window=window).mean()
         
-        # Все признаки
         all_features = [col for col in self.data.columns 
                        if col not in [date_col, target_col]]
         
@@ -195,22 +189,20 @@ class MLForecaster:
         all_features = [col for col in self.data.columns 
                        if col not in [date_col, target_col]]
         
-        # Данные для отбора (без NaN)
         df_valid = self.data.dropna(subset=all_features + [target_col])
         X = df_valid[all_features]
         y = df_valid[target_col]
         
         if self.config['expert_features']:
             # Экспертный выбор
-            print("Режим: ЭКСПЕРТНЫЙ ВЫБОР")
+            print("Режим: ЭКСПЕРТНЫЙ ВЫБОР (заданные извне желаемые параметры)")
             missing = [f for f in self.config['expert_features'] if f not in all_features]
             if missing:
                 raise ValueError(f"Признаки не найдены: {missing}")
             
             selected = self.config['expert_features'][:self.config['max_features']]
         else:
-            # Автоматический отбор по корреляции
-            print("Режим: АВТОМАТИЧЕСКИЙ ОТБОР")
+            print("Режим: АВТОМАТИЧЕСКИЙ ОТБОР (по корреляции)")
             correlations = {}
             for col in all_features:
                 valid_mask = X[col].notna() & y.notna()
@@ -221,11 +213,11 @@ class MLForecaster:
             corr_df['abs_correlation'] = corr_df['correlation'].abs()
             corr_df = corr_df.sort_values('abs_correlation', ascending=False)
             
-            # Отбор по порогу
+  
             threshold = self.config['correlation_threshold']
             selected = corr_df[corr_df['abs_correlation'] >= threshold].index.tolist()
             
-            # Ограничение количества
+
             max_feat = self.config['max_features']
             if len(selected) > max_feat:
                 selected = corr_df.head(max_feat).index.tolist()
@@ -244,7 +236,6 @@ class MLForecaster:
         date_col = self.config['date_column']
         target_col = self.config['target_column']
         
-        # Удаляем строки с NaN в признаках
         df = self.data[[date_col, target_col] + self.feature_cols].dropna()
         
         n = len(df)
@@ -261,7 +252,6 @@ class MLForecaster:
         print(f"  Val: {val_size} ({100*val_size/n:.1f}%)")
         print(f"  Test: {test_size} ({100*test_size/n:.1f}%)")
         
-        # Нормализация
         self.scaler = StandardScaler()
         
         self.X_train = self.scaler.fit_transform(self.train_df[self.feature_cols])
@@ -299,7 +289,6 @@ class MLForecaster:
             if model is not None:
                 self.models[model_name] = model
                 
-                # Предсказания
                 train_pred = model.predict(self.X_train)
                 val_pred = model.predict(self.X_val)
                 test_pred = model.predict(self.X_test)
@@ -310,7 +299,6 @@ class MLForecaster:
                     'test_pred': test_pred
                 }
                 
-                # Метрики
                 self.metrics[model_name] = {
                     'mae': mean_absolute_error(self.y_test, test_pred),
                     'rmse': np.sqrt(mean_squared_error(self.y_test, test_pred)),
@@ -324,7 +312,7 @@ class MLForecaster:
         
         self.is_fitted = True
         self.best_model = min(self.metrics, key=lambda m: self.metrics[m]['mae'])
-        print(f"\n🏆 Лучшая модель: {self.best_model} (MAE = {self.metrics[self.best_model]['mae']:.4f})")
+        print(f"\nЛучшая модель: {self.best_model} (MAE = {self.metrics[self.best_model]['mae']:.4f})")
         
         return self
     
@@ -568,13 +556,11 @@ class MLForecaster:
         
         print("\nСохранение результатов...")
         
-        # Метрики
         metrics_df = pd.DataFrame(self.metrics).T
         metrics_df.index.name = 'Model'
         metrics_df = metrics_df.sort_values('mae')
         metrics_df.to_excel(os.path.join(results_dir, 'ml_metrics.xlsx'))
         
-        # Прогнозы
         preds_df = pd.DataFrame({
             'Date': self.test_dates,
             'Actual': self.y_test
@@ -583,12 +569,10 @@ class MLForecaster:
             preds_df[f'{model_name}_pred'] = res['test_pred']
         preds_df.to_excel(os.path.join(results_dir, 'ml_predictions.xlsx'), index=False)
         
-        # Модели
         for model_name, model in self.models.items():
             path = os.path.join(models_dir, f'ml_{model_name}.pkl')
             joblib.dump(model, path)
         
-        # Scaler и config
         joblib.dump(self.scaler, os.path.join(models_dir, 'ml_scaler.pkl'))
         joblib.dump({
             'feature_cols': self.feature_cols,
@@ -605,7 +589,6 @@ class MLForecaster:
         """Визуализация результатов"""
         results_dir = self.config['results_dir']
         
-        # 1. Все прогнозы
         plt.figure(figsize=(14, 7))
         plt.plot(self.test_dates, self.y_test, 'b-', label='Факт', linewidth=2)
         
@@ -625,7 +608,6 @@ class MLForecaster:
         plt.savefig(os.path.join(results_dir, 'ml_all_predictions.png'), dpi=150)
         plt.close()
         
-        # 2. Сравнение метрик
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         models = list(self.metrics.keys())
         
@@ -660,7 +642,7 @@ class MLForecaster:
                   f"{m['mape']:<10.2f} {m['r2']:<10.4f}")
         
         print("-"*60)
-        print(f"\n🏆 Лучшая модель: {self.best_model}")
+        print(f"\nЛучшая модель: {self.best_model}")
         print(f"   MAE: {self.metrics[self.best_model]['mae']:.3f}")
         
         return self

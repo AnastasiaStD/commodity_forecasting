@@ -144,9 +144,7 @@ class KalmanForecaster:
         
         print(f"Признаки ({len(self.feature_cols)}): {self.feature_cols}")
         
-        # Индексация по дате
         self.data_indexed = self.data[[date_col, target_col] + self.feature_cols].set_index(date_col)
-        
         return self
     
     def split_data(self):
@@ -331,7 +329,6 @@ class KalmanForecaster:
                     ar_forecast.append(np.repeat(betas_history[-1, i], h))
             ar_forecast = np.array(ar_forecast).T
             
-            # Damped
             N = min(20, len(betas_history))
             damped_forecast = []
             for i in range(k):
@@ -348,7 +345,6 @@ class KalmanForecaster:
                 damped_forecast.append(forecast_i)
             damped_forecast = np.array(damped_forecast).T
             
-            # Веса по волатильности
             beta_forecast = []
             for i in range(k):
                 vol = np.std(betas_history[-20:, i]) / (np.abs(np.mean(betas_history[:, i])) + 1e-6)
@@ -408,7 +404,6 @@ class KalmanForecaster:
         adf = adfuller(spread)
         print(f"\nТест Дики-Фуллера: p-value = {adf[1]:.4f}")
         
-        # Прогнозирование
         print("\nПрогнозирование методами:")
         for method in self.config['forecast_methods']:
             print(f"  - {method}")
@@ -441,13 +436,11 @@ class KalmanForecaster:
         
         print("\nСохранение результатов...")
         
-        # Метрики
         metrics_df = pd.DataFrame(self.metrics).T
         metrics_df.index.name = 'Method'
         metrics_df = metrics_df.sort_values('mae')
         metrics_df.to_excel(os.path.join(results_dir, 'kalman_metrics.xlsx'))
         
-        # Прогнозы
         preds_df = pd.DataFrame({
             'Date': self.data_test.index,
             'Actual': self.y_test
@@ -456,11 +449,9 @@ class KalmanForecaster:
             preds_df[f'{method}_pred'] = res['y_pred']
         preds_df.to_excel(os.path.join(results_dir, 'kalman_predictions.xlsx'), index=False)
         
-        # Betas
         betas_df = pd.DataFrame(self.betas_train, index=self.data_train.index, columns=self.feature_cols)
         betas_df.to_excel(os.path.join(results_dir, 'kalman_betas_train.xlsx'))
         
-        # Модель
         joblib.dump({
             'kf_results': self.kf_results,
             'feature_cols': self.feature_cols,
@@ -483,7 +474,6 @@ class KalmanForecaster:
             'bayesian_shrinkage': 'brown', 'adaptive_ensemble': 'olive'
         }
         
-        # 1. Все прогнозы
         plt.figure(figsize=(14, 7))
         plt.plot(self.data_train.index, self.y_train, 'k-', label='Train', alpha=0.7)
         plt.plot(self.data_train.index, self.y_train_fitted, 'orange', ls='--', label='Fitted', alpha=0.7)
@@ -503,7 +493,6 @@ class KalmanForecaster:
         plt.savefig(os.path.join(results_dir, 'kalman_all_forecasts.png'), dpi=150)
         plt.close()
         
-        # 2. Эволюция β
         n_feat = len(self.feature_cols)
         fig, axes = plt.subplots(n_feat, 1, figsize=(14, 3*n_feat), sharex=True)
         if n_feat == 1:
@@ -523,7 +512,6 @@ class KalmanForecaster:
         plt.savefig(os.path.join(results_dir, 'kalman_beta_evolution.png'), dpi=150)
         plt.close()
         
-        # 3. Сравнение метрик
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         methods = list(self.metrics.keys())
         
@@ -558,7 +546,7 @@ class KalmanForecaster:
                   f"{m['mape']:<10.2f} {m['r2']:<10.4f}")
         
         print("-"*65)
-        print(f"\n🏆 Лучший метод: {self.best_method}")
+        print(f"\nЛучший метод: {self.best_method}")
         print(f"   MAE: {self.metrics[self.best_method]['mae']:.3f}")
         
         return self
