@@ -42,3 +42,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+
+catboost_info/
+notebooks/catboost_info/
