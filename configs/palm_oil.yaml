@@ -1,0 +1,57 @@
+# ============================================================
+# Конфигурация для прогнозирования цен на ПАЛЬМОВОЕ МАСЛО
+# ============================================================
+
+# === ДАННЫЕ ===
+input_file: '../data/po_factors.xlsx'
+date_column: 'dt'
+target_column: 'price'
+
+# === ПРИЗНАКИ ===
+features: []
+
+# Золото - автоматический отбор признаков
+expert_features: []
+
+# === ML МОДЕЛЬ ===
+max_features: 10
+correlation_threshold: 0.3
+create_features: true
+lags: [3, 6, 9, 12, 18, 24]
+ma_windows: [3, 6, 9, 12]
+
+models_to_train:
+  - catboost
+  - xgb
+  - lgb
+  - ridge
+  - lasso
+  - random_forest
+  - adaboost
+
+n_optuna_trials: 100
+
+# === KALMAN МОДЕЛЬ ===
+initial_state_covariance: 100.0
+observation_covariance: 1.0
+transition_covariance: 0.01
+em_iterations: 5
+
+forecast_methods:
+  - last_beta
+  - random_walk
+  - linear_trend
+  - ar_beta
+  - damped_trend
+  - bayesian_shrinkage
+  - adaptive_ensemble
+
+# === РАЗДЕЛЕНИЕ ДАННЫХ ===
+test_size_ratio: 0.1
+val_size_ratio: 0.15
+
+# === ПУТИ ===
+results_dir: 'results/gold'
+models_dir: 'saved_models/gold'
+
+random_seed: 42
