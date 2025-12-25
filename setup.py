@@ -16,11 +16,11 @@ setup(
     name="commodity-forecasting",
     version="1.0.0",
     author="Commodity Forecasting Team",
-    author_email="your.email@example.com",
+    author_email="anstolyarowa@yandex.ru",
     description="Библиотека для прогнозирования цен на сырьевые товары",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/your-username/commodity-forecasting",
+    url="https://github.com/AnastasiaStD/commodity_forecasting",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
