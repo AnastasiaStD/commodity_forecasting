@@ -322,6 +322,57 @@ target_column: 'My Price'
 python run.py --config configs/my_commodity.yaml --model all
 ```
 
+## Логирование
+
+Все запуски автоматически логируются в директорию `logs/`:
+
+```bash
+# Стандартный запуск - логи в logs/
+python run.py --all
+
+# Указать другую директорию
+python run.py --all --log-dir my_logs
+
+# Отключить логирование в файл
+python run.py --all --no-log
+```
+
+### Содержимое лог-файла
+
+Лог-файл содержит:
+- Время запуска
+- Все выводимые сообщения
+- Время выполнения каждой задачи
+- Итоговую сводку по времени
+
+Пример имени файла: `logs/all_commodities_20250101_143022.log`
+
+### Использование логгера в Python
+
+```python
+from forecasting import Logger, get_logger
+
+# Создание логгера
+logger = Logger(log_dir='logs', name='my_experiment')
+
+# Сообщения
+logger.info("Информация")
+logger.warning("Предупреждение")
+logger.error("Ошибка")
+logger.success("Успех")
+
+# Заголовки
+logger.section("ГЛАВНЫЙ РАЗДЕЛ")
+logger.subsection("Подраздел")
+
+# Замер времени
+with logger.timer("Обучение модели"):
+    model.fit()
+
+# Сводка по времени
+logger.summary()
+```
+
 ## Лицензия
 
 MIT License

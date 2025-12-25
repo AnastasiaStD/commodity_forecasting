@@ -22,11 +22,21 @@ Commodity Forecasting Library
     kf.fit()
     kf.evaluate()
     kf.save_results()
+
+Логирование:
+    from forecasting import Logger, get_logger
+    
+    logger = Logger(log_dir='logs', name='my_run')
+    logger.info("Сообщение")
+    
+    with logger.timer("Обучение"):
+        model.fit()
 """
 
 from .models.ml_forecaster import MLForecaster
 from .models.kalman_forecaster import KalmanForecaster
+from .utils.logger import Logger, get_logger, set_logger
 
 __version__ = '1.0.0'
 __author__ = 'Commodity Forecasting Team'
-__all__ = ['MLForecaster', 'KalmanForecaster']
+__all__ = ['MLForecaster', 'KalmanForecaster', 'Logger', 'get_logger', 'set_logger']
