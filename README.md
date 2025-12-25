@@ -1,6 +1,6 @@
 # Commodity Forecasting Library
 
-Библиотека для прогнозирования цен на сырьевые товары с использованием машинного обучения и фильтра Калмана.
+Библиотека для прогнозирования цен на штз с использованием машинного обучения и фильтра Калмана.
 
 ## Возможности
 
@@ -241,4 +241,4 @@ MIT License
 
 ## Авторы
 
-Commodity Forecasting Team
+Aleksey Kirichenko, Anastasia Belotserkovets

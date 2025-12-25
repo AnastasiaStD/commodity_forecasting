@@ -29,7 +29,7 @@ from forecasting import MLForecaster, KalmanForecaster
 
 
 # Доступные датасеты
-COMMODITIES = ['sugar', 'wheat', 'milk', 'gold', 'soybean']
+COMMODITIES = ['sugar', 'wheat', 'milk', 'palm_oil', 'sf_oil', 'soybean']
 
 
 def run_ml(config_path):
