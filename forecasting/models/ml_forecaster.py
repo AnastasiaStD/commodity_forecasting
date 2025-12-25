@@ -50,6 +50,7 @@ from optuna.samplers import TPESampler
 import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostRegressor
+import shap
 
 warnings.filterwarnings('ignore')
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -87,15 +88,14 @@ class MLForecaster:
         self.models = {}
         self.results = {}
         self.metrics = {}
+        self.feature_importances = {}
         self.scaler = None
         self.feature_cols = None
         self.data = None
         self.is_fitted = False
         
-
         self._set_seed()
         
-
         os.makedirs(self.config['results_dir'], exist_ok=True)
         os.makedirs(self.config['models_dir'], exist_ok=True)
     
@@ -111,7 +111,7 @@ class MLForecaster:
         
         defaults = {
             'input_file': 'data/input_data.xlsx',
-            'forecast_file': '',  # файл с данными для прогноза
+            'forecast_file': '', 
             'date_column': 'Date',
             'target_column': 'Price',
             'features': [],
@@ -176,7 +176,7 @@ class MLForecaster:
                         if col not in [date_col, target_col]]
         
         print(f"Базовые признаки ({len(base_cols)}): {base_cols}")
-        
+
         if self.config['create_features']:
             print(f"Создание лагов: {self.config['lags']}")
             for col in base_cols:
@@ -228,7 +228,7 @@ class MLForecaster:
             
             threshold = self.config['correlation_threshold']
             selected = corr_df[corr_df['abs_correlation'] >= threshold].index.tolist()
-            
+
             max_feat = self.config['max_features']
             if len(selected) > max_feat:
                 selected = corr_df.head(max_feat).index.tolist()
@@ -323,7 +323,11 @@ class MLForecaster:
         
         self.is_fitted = True
         self.best_model = min(self.metrics, key=lambda m: self.metrics[m]['mae'])
-        print(f"\n🏆 Лучшая модель: {self.best_model} (MAE = {self.metrics[self.best_model]['mae']:.4f})")
+        print(f"\nЛучшая модель: {self.best_model} (MAE = {self.metrics[self.best_model]['mae']:.4f})")
+        
+        print("\n" + "-"*50)
+        print("Расчёт важности признаков...")
+        self._calculate_all_feature_importances()
         
         return self
     
@@ -553,6 +557,206 @@ class MLForecaster:
         model = AdaBoostRegressor(**study.best_params, random_state=seed)
         model.fit(X_full, y_full)
         return model
+
+    
+    def _calculate_all_feature_importances(self):
+        """
+        Расчёт важности признаков для всех обученных моделей.
+        
+        Использует:
+        - feature_importances_ для tree-based моделей (CatBoost, XGB, LGB, RF, AdaBoost)
+        - coef_ для линейных моделей (Ridge, Lasso, SGD)
+        - SHAP values для моделей без встроенной важности (KNN, SVR)
+        """
+        for model_name, model in self.models.items():
+            print(f"  {model_name}...", end=" ")
+            try:
+                importance = self._calculate_single_importance(model_name, model)
+                if importance is not None:
+                    self.feature_importances[model_name] = importance
+                    print("✓")
+                else:
+                    print("пропущено")
+            except Exception as e:
+                print(f"ошибка: {e}")
+    
+    def _calculate_single_importance(self, model_name, model):
+        """
+        Расчёт важности для одной модели.
+        
+        Returns:
+        --------
+        dict с ключами:
+            - 'values': np.array с важностями
+            - 'method': str метод расчёта ('native', 'coef', 'shap')
+            - 'normalized': np.array нормализованные значения (сумма = 100)
+        """
+        importance = None
+        method = None
+        
+        if hasattr(model, 'feature_importances_'):
+            importance = model.feature_importances_
+            method = 'native'
+    
+        elif hasattr(model, 'coef_'):
+            importance = np.abs(model.coef_)
+            method = 'coef'
+        
+        elif model_name in ['knn', 'svr']:
+            importance = self._calculate_shap_importance(model)
+            method = 'shap'
+        
+        if importance is None:
+            return None
+        
+        total = np.sum(np.abs(importance))
+        if total > 0:
+            normalized = np.abs(importance) / total * 100
+        else:
+            normalized = np.zeros_like(importance)
+        
+        return {
+            'values': importance,
+            'method': method,
+            'normalized': normalized,
+            'features': self.feature_cols
+        }
+    
+    def _calculate_shap_importance(self, model, n_samples=100):
+        """
+        Расчёт SHAP values для модели.
+        
+        Parameters:
+        -----------
+        model : sklearn model
+            Обученная модель
+        n_samples : int
+            Количество сэмплов для расчёта (для ускорения)
+        
+        Returns:
+        --------
+        np.array с mean(|SHAP|) для каждого признака
+        """
+        
+        X_sample = self.X_train
+        if len(X_sample) > n_samples:
+            idx = np.random.choice(len(X_sample), n_samples, replace=False)
+            X_sample = X_sample[idx]
+        
+        try:
+            explainer = shap.KernelExplainer(model.predict, X_sample[:50])
+            shap_values = explainer.shap_values(X_sample)
+            importance = np.abs(shap_values).mean(axis=0)
+            return importance
+        except Exception as e:
+            print(f"SHAP error: {e}")
+            return None
+    
+    def get_feature_importance(self, model_name=None, top_n=None):
+        """
+        Получение важности признаков.
+        
+        Parameters:
+        -----------
+        model_name : str, optional
+            Какую модель использовать. По умолчанию best_model
+        top_n : int, optional
+            Вернуть только top-N признаков
+        
+        Returns:
+        --------
+        pd.DataFrame с важностью признаков
+        """
+        model_name = model_name or self.best_model
+        
+        if model_name not in self.feature_importances:
+            if model_name in self.models:
+                imp = self._calculate_single_importance(model_name, self.models[model_name])
+                if imp:
+                    self.feature_importances[model_name] = imp
+                else:
+                    print(f"Не удалось рассчитать важность для {model_name}")
+                    return None
+            else:
+                print(f"Модель {model_name} не найдена")
+                return None
+        
+        imp_data = self.feature_importances[model_name]
+        
+        result = pd.DataFrame({
+            'feature': imp_data['features'],
+            'importance': imp_data['values'],
+            'importance_pct': imp_data['normalized'],
+            'method': imp_data['method']
+        }).sort_values('importance_pct', ascending=False)
+        
+        result['rank'] = range(1, len(result) + 1)
+        result = result[['rank', 'feature', 'importance', 'importance_pct', 'method']]
+        
+        if top_n:
+            result = result.head(top_n)
+        
+        return result
+    
+    def get_all_feature_importances(self):
+        """
+        Получение важности признаков для всех моделей.
+        
+        Returns:
+        --------
+        pd.DataFrame с важностями по всем моделям
+        """
+        all_data = []
+        
+        for model_name in self.feature_importances:
+            imp = self.get_feature_importance(model_name)
+            if imp is not None:
+                imp = imp.copy()
+                imp['model'] = model_name
+                all_data.append(imp)
+        
+        if not all_data:
+            return None
+        
+        return pd.concat(all_data, ignore_index=True)
+    
+    def get_aggregated_importance(self, method='mean'):
+        """
+        Агрегированная важность по всем моделям.
+        
+        Parameters:
+        -----------
+        method : str
+            'mean' - среднее, 'median' - медиана, 'rank' - средний ранг
+        
+        Returns:
+        --------
+        pd.DataFrame с агрегированной важностью
+        """
+        all_imp = self.get_all_feature_importances()
+        if all_imp is None:
+            return None
+        
+        if method == 'mean':
+            agg = all_imp.groupby('feature')['importance_pct'].mean()
+        elif method == 'median':
+            agg = all_imp.groupby('feature')['importance_pct'].median()
+        elif method == 'rank':
+            agg = all_imp.groupby('feature')['rank'].mean()
+            # Инвертируем ранг (меньше = лучше)
+            agg = agg.max() - agg + 1
+        else:
+            raise ValueError(f"Unknown method: {method}")
+        
+        result = pd.DataFrame({
+            'feature': agg.index,
+            f'importance_{method}': agg.values
+        }).sort_values(f'importance_{method}', ascending=False)
+        
+        result['rank'] = range(1, len(result) + 1)
+        result = result[['rank', 'feature', f'importance_{method}']]
+        
+        return result
     
     def predict(self, X, model_name=None):
         """Прогноз на новых данных"""
@@ -580,17 +784,42 @@ class MLForecaster:
             preds_df[f'{model_name}_pred'] = res['test_pred']
         preds_df.to_excel(os.path.join(results_dir, 'ml_predictions.xlsx'), index=False)
         
+
+        if self.feature_importances:
+            all_imp = self.get_all_feature_importances()
+            if all_imp is not None:
+                all_imp.to_excel(os.path.join(results_dir, 'ml_feature_importance_detailed.xlsx'), index=False)
+            
+            pivot_data = []
+            for model_name, imp_data in self.feature_importances.items():
+                for feat, val in zip(imp_data['features'], imp_data['normalized']):
+                    pivot_data.append({'feature': feat, 'model': model_name, 'importance_pct': val})
+            
+            if pivot_data:
+                pivot_df = pd.DataFrame(pivot_data)
+                pivot_table = pivot_df.pivot(index='feature', columns='model', values='importance_pct')
+                pivot_table['mean'] = pivot_table.mean(axis=1)
+                pivot_table = pivot_table.sort_values('mean', ascending=False)
+                pivot_table.to_excel(os.path.join(results_dir, 'ml_feature_importance_pivot.xlsx'))
+            
+            agg_imp = self.get_aggregated_importance(method='mean')
+            if agg_imp is not None:
+                agg_imp.to_excel(os.path.join(results_dir, 'ml_feature_importance_aggregated.xlsx'), index=False)
+            
+            print(f"  Feature importance сохранён")
+        
         for model_name, model in self.models.items():
             path = os.path.join(models_dir, f'ml_{model_name}.pkl')
             joblib.dump(model, path)
         
         joblib.dump(self.scaler, os.path.join(models_dir, 'ml_scaler.pkl'))
-        
+
         meta = {
             'feature_cols': self.feature_cols,
             'config': self.config,
             'best_model': self.best_model,
             'metrics': self.metrics,
+            'feature_importances': self.feature_importances, 
             'base_features': self._get_base_features(),
             'created_at': datetime.now().isoformat()
         }
@@ -622,8 +851,7 @@ class MLForecaster:
     def plot_results(self):
         """Визуализация результатов"""
         results_dir = self.config['results_dir']
-        
-        # 1. Все прогнозы
+
         plt.figure(figsize=(14, 7))
         plt.plot(self.test_dates, self.y_test, 'b-', label='Факт', linewidth=2)
         
@@ -642,8 +870,7 @@ class MLForecaster:
         plt.tight_layout()
         plt.savefig(os.path.join(results_dir, 'ml_all_predictions.png'), dpi=150)
         plt.close()
-        
-        # 2. Сравнение метрик
+ 
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         models = list(self.metrics.keys())
         
@@ -660,8 +887,98 @@ class MLForecaster:
         plt.savefig(os.path.join(results_dir, 'ml_metrics_comparison.png'), dpi=150)
         plt.close()
         
+        if self.feature_importances:
+            self._plot_feature_importance()
+        
         print(f"Графики сохранены в {results_dir}")
         return self
+    
+    def _plot_feature_importance(self):
+        """Визуализация важности признаков"""
+        results_dir = self.config['results_dir']
+        
+        best_imp = self.get_feature_importance(self.best_model)
+        if best_imp is not None:
+            top_n = min(15, len(best_imp))
+            top_imp = best_imp.head(top_n)
+            
+            plt.figure(figsize=(12, 8))
+            colors = plt.cm.Blues(np.linspace(0.4, 0.9, top_n))[::-1]
+            
+            plt.barh(range(top_n), top_imp['importance_pct'].values[::-1], color=colors)
+            plt.yticks(range(top_n), top_imp['feature'].values[::-1])
+            plt.xlabel('Важность (%)')
+            plt.title(f'Feature Importance: {self.best_model} (метод: {top_imp["method"].iloc[0]})', 
+                     fontsize=14, fontweight='bold')
+            plt.grid(True, alpha=0.3, axis='x')
+
+            for i, v in enumerate(top_imp['importance_pct'].values[::-1]):
+                plt.text(v + 0.5, i, f'{v:.1f}%', va='center', fontsize=9)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(results_dir, f'ml_feature_importance_{self.best_model}.png'), dpi=150)
+            plt.close()
+        
+        if len(self.feature_importances) > 1:
+            models = list(self.feature_importances.keys())
+            features = self.feature_cols
+            data = np.zeros((len(features), len(models)))
+            for j, model_name in enumerate(models):
+                imp_data = self.feature_importances[model_name]
+                for i, feat in enumerate(features):
+                    idx = list(imp_data['features']).index(feat)
+                    data[i, j] = imp_data['normalized'][idx]
+            
+            mean_imp = data.mean(axis=1)
+            sort_idx = np.argsort(mean_imp)[::-1]
+        
+            top_n = min(15, len(features))
+            top_idx = sort_idx[:top_n]
+            
+            data_top = data[top_idx]
+            features_top = [features[i] for i in top_idx]
+            
+            fig, ax = plt.subplots(figsize=(12, 10))
+            im = ax.imshow(data_top, cmap='YlOrRd', aspect='auto')
+            
+            ax.set_xticks(range(len(models)))
+            ax.set_xticklabels(models, rotation=45, ha='right')
+            ax.set_yticks(range(len(features_top)))
+            ax.set_yticklabels(features_top)
+
+            for i in range(len(features_top)):
+                for j in range(len(models)):
+                    text = ax.text(j, i, f'{data_top[i, j]:.1f}',
+                                  ha='center', va='center', fontsize=8,
+                                  color='white' if data_top[i, j] > 10 else 'black')
+            
+            plt.colorbar(im, label='Важность (%)')
+            plt.title('Feature Importance: сравнение моделей (Top-15)', fontsize=14, fontweight='bold')
+            plt.tight_layout()
+            plt.savefig(os.path.join(results_dir, 'ml_feature_importance_heatmap.png'), dpi=150)
+            plt.close()
+        
+        agg_imp = self.get_aggregated_importance(method='mean')
+        if agg_imp is not None:
+            top_n = min(15, len(agg_imp))
+            top_agg = agg_imp.head(top_n)
+            
+            plt.figure(figsize=(12, 8))
+            colors = plt.cm.Greens(np.linspace(0.4, 0.9, top_n))[::-1]
+            
+            plt.barh(range(top_n), top_agg['importance_mean'].values[::-1], color=colors)
+            plt.yticks(range(top_n), top_agg['feature'].values[::-1])
+            plt.xlabel('Средняя важность (%)')
+            plt.title('Агрегированная важность признаков (среднее по всем моделям)', 
+                     fontsize=14, fontweight='bold')
+            plt.grid(True, alpha=0.3, axis='x')
+            
+            for i, v in enumerate(top_agg['importance_mean'].values[::-1]):
+                plt.text(v + 0.3, i, f'{v:.1f}%', va='center', fontsize=9)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(results_dir, 'ml_feature_importance_aggregated.png'), dpi=150)
+            plt.close()
     
     def summary(self):
         """Вывод итогов"""
@@ -683,9 +1000,6 @@ class MLForecaster:
         
         return self
     
-    # =========================================================================
-    #                    МЕТОДЫ ДЛЯ ПРОГНОЗА НА НОВЫХ ДАННЫХ
-    # =========================================================================
     
     @classmethod
     def load(cls, models_dir):
@@ -708,7 +1022,6 @@ class MLForecaster:
         """
         instance = cls.__new__(cls)
         
-        # Загрузка метаданных
         meta_path = os.path.join(models_dir, 'ml_meta.pkl')
         if not os.path.exists(meta_path):
             raise FileNotFoundError(f"Метаданные не найдены: {meta_path}")
@@ -719,15 +1032,14 @@ class MLForecaster:
         instance.best_model = meta['best_model']
         instance.metrics = meta.get('metrics', {})
         instance.base_features = meta.get('base_features', [])
+        instance.feature_importances = meta.get('feature_importances', {})
         
-        # Загрузка scaler
         scaler_path = os.path.join(models_dir, 'ml_scaler.pkl')
         if os.path.exists(scaler_path):
             instance.scaler = joblib.load(scaler_path)
         else:
             instance.scaler = None
         
-        # Загрузка моделей
         instance.models = {}
         for model_name in cls.AVAILABLE_MODELS:
             model_path = os.path.join(models_dir, f'ml_{model_name}.pkl')
@@ -755,8 +1067,7 @@ class MLForecaster:
             Путь к директории. Если не указан, берется из config['models_dir']
         """
         models_dir = models_dir or self.config['models_dir']
-        
-        # Загрузка метаданных
+
         meta_path = os.path.join(models_dir, 'ml_meta.pkl')
         if not os.path.exists(meta_path):
             raise FileNotFoundError(f"Метаданные не найдены: {meta_path}")
@@ -766,19 +1077,17 @@ class MLForecaster:
         self.best_model = meta['best_model']
         self.metrics = meta.get('metrics', {})
         self.base_features = meta.get('base_features', [])
+        self.feature_importances = meta.get('feature_importances', {})
         
-        # Обновляем конфиг из сохраненного (кроме путей)
         saved_config = meta['config']
         for key in ['lags', 'ma_windows', 'create_features', 'date_column', 'target_column']:
             if key in saved_config:
                 self.config[key] = saved_config[key]
         
-        # Загрузка scaler
         scaler_path = os.path.join(models_dir, 'ml_scaler.pkl')
         if os.path.exists(scaler_path):
             self.scaler = joblib.load(scaler_path)
         
-        # Загрузка моделей
         self.models = {}
         for model_name in self.AVAILABLE_MODELS:
             model_path = os.path.join(models_dir, f'ml_{model_name}.pkl')
@@ -837,18 +1146,12 @@ class MLForecaster:
         print(f"Файл: {filepath}")
         print(f"Модель: {model_name}")
         
-        # Загрузка данных
         df = pd.read_excel(filepath)
         print(f"Загружено строк: {len(df)}")
         
-        # Подготовка признаков
         X_forecast, dates = self._prepare_forecast_features(df)
-        
-        # Прогноз
         model = self.models[model_name]
         predictions = model.predict(X_forecast)
-        
-        # Формирование результата
         date_col = self.config['date_column']
         target_col = self.config['target_column']
         
@@ -856,8 +1159,7 @@ class MLForecaster:
             date_col: dates,
             f'{target_col}_predicted': predictions
         })
-        
-        # Добавляем прогнозы от всех моделей
+
         for name, mdl in self.models.items():
             if name != model_name:
                 result_df[f'{target_col}_pred_{name}'] = mdl.predict(X_forecast)
@@ -865,7 +1167,6 @@ class MLForecaster:
         print(f"\nПрогноз ({len(predictions)} значений):")
         print(result_df.head(10).to_string(index=False))
         
-        # Сохранение
         if save_results:
             results_dir = self.config['results_dir']
             os.makedirs(results_dir, exist_ok=True)
@@ -874,7 +1175,6 @@ class MLForecaster:
             result_df.to_excel(output_path, index=False)
             print(f"\nРезультаты сохранены: {output_path}")
             
-            # График
             self._plot_forecast(result_df, model_name)
         
         return result_df
@@ -888,17 +1188,14 @@ class MLForecaster:
         date_col = self.config['date_column']
         target_col = self.config['target_column']
         
-        # Преобразование даты
         if date_col in df.columns:
             df[date_col] = pd.to_datetime(df[date_col])
             dates = df[date_col].values
         else:
             dates = np.arange(len(df))
         
-        # Проверка наличия базовых признаков
         base_features = getattr(self, 'base_features', [])
         if not base_features:
-            # Пытаемся определить из feature_cols
             base_features = [col for col in self.feature_cols 
                            if '_lag_' not in col and '_ma_' not in col]
         
@@ -906,32 +1203,26 @@ class MLForecaster:
         if missing:
             raise ValueError(f"В файле отсутствуют признаки: {missing}")
         
-        # Генерация лагов и MA если нужно
         if self.config.get('create_features', False):
             print("Генерация лагов и скользящих средних...")
             
             for col in base_features:
-                # Лаги
                 for lag in self.config.get('lags', []):
                     col_name = f"{col}_lag_{lag}"
                     if col_name in self.feature_cols:
                         df[col_name] = df[col].shift(lag)
-                
-                # MA
+
                 for window in self.config.get('ma_windows', []):
                     col_name = f"{col}_ma_{window}"
                     if col_name in self.feature_cols:
                         df[col_name] = df[col].rolling(window=window).mean()
         
-        # Проверка всех необходимых признаков
         missing_features = [f for f in self.feature_cols if f not in df.columns]
         if missing_features:
             print(f"ВНИМАНИЕ: Не все признаки найдены. Отсутствуют: {missing_features}")
-            # Заполняем отсутствующие нулями (с предупреждением)
             for f in missing_features:
                 df[f] = 0
         
-        # Удаление строк с NaN (из-за лагов)
         df_clean = df.dropna(subset=[f for f in self.feature_cols if f in df.columns])
         
         if len(df_clean) == 0:
@@ -942,10 +1233,8 @@ class MLForecaster:
             print(f"  Удалено строк с NaN: {len(df) - len(df_clean)}")
             dates = df_clean[date_col].values if date_col in df_clean.columns else dates[:len(df_clean)]
         
-        # Извлечение признаков
         X = df_clean[self.feature_cols].values
         
-        # Нормализация
         if self.scaler is not None:
             X = self.scaler.transform(X)
         
@@ -961,8 +1250,7 @@ class MLForecaster:
         target_col = self.config['target_column']
         
         plt.figure(figsize=(14, 6))
-        
-        # Основной прогноз
+    
         pred_col = f'{target_col}_predicted'
         plt.plot(result_df[date_col], result_df[pred_col], 
                 'b-', linewidth=2, marker='o', markersize=4,
@@ -979,41 +1267,3 @@ class MLForecaster:
         plt.close()
         
         print(f"График сохранен: {results_dir}/ml_forecast_plot.png")
-    
-    def get_feature_importance(self, model_name=None):
-        """
-        Получение важности признаков.
-        
-        Parameters:
-        -----------
-        model_name : str, optional
-            Какую модель использовать
-        
-        Returns:
-        --------
-        pd.DataFrame с важностью признаков
-        """
-        model_name = model_name or self.best_model
-        model = self.models.get(model_name)
-        
-        if model is None:
-            raise ValueError(f"Модель '{model_name}' не найдена")
-        
-        # Получение важности (зависит от типа модели)
-        importance = None
-        
-        if hasattr(model, 'feature_importances_'):
-            importance = model.feature_importances_
-        elif hasattr(model, 'coef_'):
-            importance = np.abs(model.coef_)
-        
-        if importance is None:
-            print(f"Модель {model_name} не поддерживает feature importance")
-            return None
-        
-        result = pd.DataFrame({
-            'feature': self.feature_cols,
-            'importance': importance
-        }).sort_values('importance', ascending=False)
-        
-        return result
