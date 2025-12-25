@@ -3,7 +3,7 @@
 # ============================================================
 
 # === ДАННЫЕ ===
-input_file: '../data/wheat_factors.xlsx'
+input_file: 'data/wheat_factors.xlsx'
 date_column: 'dt'
 target_column: 'price'
 
@@ -16,6 +16,8 @@ expert_features:
   - 'DXY'
   - 'Baltic Dry Index'
   - 'usdrub'
+  - 'grp'
+  - 'Stocks-to-Use Ratio C'
 
 # === ML МОДЕЛЬ ===
 max_features: 10

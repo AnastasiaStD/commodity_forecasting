@@ -22,14 +22,12 @@ import os
 import sys
 from pathlib import Path
 
-# Добавляем путь к библиотеке
 sys.path.insert(0, str(Path(__file__).parent))
 
 from forecasting import MLForecaster, KalmanForecaster
 
 
-# Доступные датасеты
-COMMODITIES = ['sugar', 'wheat', 'milk', 'palm_oil', 'sf_oil', 'soybean']
+COMMODITIES = ['milk', 'palm_oil', 'sf_oil', 'soybean', 'sugar', 'wheat']
 
 
 def run_ml(config_path):
@@ -128,10 +126,10 @@ def main():
         description='Commodity Forecasting - Прогнозирование цен на сырьевые товары',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Примеры:
-  python run.py --config configs/sugar.yaml --model ml
-  python run.py --commodity wheat --model kalman
-  python run.py --all --model all
+        Примеры:
+            python run.py --config configs/sugar.yaml --model ml
+            python run.py --commodity wheat --model kalman
+            python run.py --all --model all
         """
     )
     
@@ -146,7 +144,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Проверка аргументов
     if not any([args.config, args.commodity, args.all]):
         parser.print_help()
         print("\nОШИБКА: Укажите --config, --commodity или --all")
@@ -170,7 +167,7 @@ def main():
         run_commodity(args.commodity, args.model)
     
     print("\n" + "="*70)
-    print("✅ ВЫПОЛНЕНИЕ ЗАВЕРШЕНО")
+    print("ВЫПОЛНЕНИЕ ЗАВЕРШЕНО")
     print("="*70)
 
 

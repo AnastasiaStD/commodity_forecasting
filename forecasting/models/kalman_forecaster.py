@@ -10,6 +10,16 @@ Kalman Forecaster - Time-Varying Kalman Filter для прогнозирован
 - damped_trend: затухающий тренд
 - bayesian_shrinkage: байесовское сжатие
 - adaptive_ensemble: адаптивный ансамбль
+
+Использование для прогноза на новых данных:
+    # Вариант 1: Загрузка модели и прогноз
+    forecaster = KalmanForecaster.load('saved_models/sugar')
+    predictions = forecaster.predict_from_file('data/future_features.xlsx')
+    
+    # Вариант 2: Через конфиг
+    forecaster = KalmanForecaster(config='configs/sugar.yaml')
+    forecaster.load_model()
+    predictions = forecaster.predict_from_file()  # использует forecast_file из конфига
 """
 
 import numpy as np
@@ -22,6 +32,7 @@ import os
 import warnings
 import joblib
 import yaml
+from datetime import datetime
 
 from pykalman import KalmanFilter
 from statsmodels.tsa.ar_model import AutoReg
@@ -78,6 +89,7 @@ class KalmanForecaster:
         
         defaults = {
             'input_file': 'data/input_data.xlsx',
+            'forecast_file': '',
             'date_column': 'dt',
             'target_column': 'Price',
             'features': [],
@@ -145,6 +157,7 @@ class KalmanForecaster:
         print(f"Признаки ({len(self.feature_cols)}): {self.feature_cols}")
         
         self.data_indexed = self.data[[date_col, target_col] + self.feature_cols].set_index(date_col)
+        
         return self
     
     def split_data(self):
@@ -316,10 +329,8 @@ class KalmanForecaster:
             beta_forecast = np.array(beta_forecast).T
             
         elif method == 'adaptive_ensemble':
-            # Компоненты ансамбля
             last = np.tile(betas_history[-1], (h, 1))
             
-            # AR
             ar_forecast = []
             for i in range(k):
                 try:
@@ -392,14 +403,13 @@ class KalmanForecaster:
         
         self._fit_kalman()
         
-        # Метрики на train
+
         train_mae = mean_absolute_error(self.y_train, self.y_train_fitted)
         train_mape = np.mean(np.abs((self.y_train - self.y_train_fitted) / self.y_train)) * 100
         print(f"\nМетрики на Train:")
         print(f"  MAE: {train_mae:.3f}")
         print(f"  MAPE: {train_mape:.2f}%")
-        
-        # Тест стационарности
+
         spread = self.y_train - self.y_train_fitted
         adf = adfuller(spread)
         print(f"\nТест Дики-Фуллера: p-value = {adf[1]:.4f}")
@@ -419,7 +429,7 @@ class KalmanForecaster:
         
         self.is_fitted = True
         self.best_method = min(self.metrics, key=lambda m: self.metrics[m]['mae'])
-        print(f"\n🏆 Лучший метод: {self.best_method} (MAE = {self.metrics[self.best_method]['mae']:.4f})")
+        print(f"\nЛучший метод: {self.best_method} (MAE = {self.metrics[self.best_method]['mae']:.4f})")
         
         return self
     
@@ -430,7 +440,7 @@ class KalmanForecaster:
         raise NotImplementedError("Use fit() for new data")
     
     def save_results(self):
-        """Сохранение результатов"""
+        """Сохранение результатов и модели для последующего прогноза"""
         results_dir = self.config['results_dir']
         models_dir = self.config['models_dir']
         
@@ -452,15 +462,22 @@ class KalmanForecaster:
         betas_df = pd.DataFrame(self.betas_train, index=self.data_train.index, columns=self.feature_cols)
         betas_df.to_excel(os.path.join(results_dir, 'kalman_betas_train.xlsx'))
         
-        joblib.dump({
+        model_data = {
             'kf_results': self.kf_results,
             'feature_cols': self.feature_cols,
             'best_method': self.best_method,
-            'config': self.config
-        }, os.path.join(models_dir, 'kalman_model.pkl'))
+            'metrics': self.metrics,
+            'config': self.config,
+            'betas_train': self.betas_train,
+            'betas_history': self.kf_results['betas_filtered'],
+            'state_covs_history': self.kf_results['state_covs_filtered'],
+            'created_at': datetime.now().isoformat()
+        }
+        joblib.dump(model_data, os.path.join(models_dir, 'kalman_model.pkl'))
         
         print(f"  Результаты: {results_dir}")
         print(f"  Модели: {models_dir}")
+        print(f"  Признаки ({len(self.feature_cols)}): {self.feature_cols}")
         
         return self
     
@@ -550,3 +567,431 @@ class KalmanForecaster:
         print(f"   MAE: {self.metrics[self.best_method]['mae']:.3f}")
         
         return self
+    
+    # =========================================================================
+    #                    МЕТОДЫ ДЛЯ ПРОГНОЗА НА НОВЫХ ДАННЫХ
+    # =========================================================================
+    
+    @classmethod
+    def load(cls, models_dir):
+        """
+        Загрузка сохраненной модели из директории.
+        
+        Parameters:
+        -----------
+        models_dir : str
+            Путь к директории с сохраненными моделями
+        
+        Returns:
+        --------
+        KalmanForecaster с загруженной моделью
+        
+        Example:
+        --------
+        >>> forecaster = KalmanForecaster.load('saved_models/sugar')
+        >>> predictions = forecaster.predict_from_file('data/future.xlsx')
+        """
+        instance = cls.__new__(cls)
+        
+        model_path = os.path.join(models_dir, 'kalman_model.pkl')
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Модель не найдена: {model_path}")
+        
+        model_data = joblib.load(model_path)
+        
+        instance.config = model_data['config']
+        instance.feature_cols = model_data['feature_cols']
+        instance.best_method = model_data['best_method']
+        instance.metrics = model_data.get('metrics', {})
+        instance.kf_results = model_data['kf_results']
+        instance.betas_train = model_data.get('betas_train')
+        instance.betas_history = model_data.get('betas_history', model_data['kf_results']['betas_filtered'])
+        instance.state_covs_history = model_data.get('state_covs_history', model_data['kf_results']['state_covs_filtered'])
+        
+        instance.is_fitted = True
+        instance.results = {}
+        instance.data = None
+        
+        print(f"Модель загружена из {models_dir}")
+        print(f"  Лучший метод: {instance.best_method}")
+        print(f"  Признаки ({len(instance.feature_cols)}): {instance.feature_cols}")
+        
+        return instance
+    
+    def load_model(self, models_dir=None):
+        """
+        Загрузка сохраненной модели в текущий экземпляр.
+        
+        Parameters:
+        -----------
+        models_dir : str, optional
+            Путь к директории. Если не указан, берется из config['models_dir']
+        """
+        models_dir = models_dir or self.config['models_dir']
+        
+        model_path = os.path.join(models_dir, 'kalman_model.pkl')
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Модель не найдена: {model_path}")
+        
+        model_data = joblib.load(model_path)
+        
+        self.feature_cols = model_data['feature_cols']
+        self.best_method = model_data['best_method']
+        self.metrics = model_data.get('metrics', {})
+        self.kf_results = model_data['kf_results']
+        self.betas_train = model_data.get('betas_train')
+        self.betas_history = model_data.get('betas_history', model_data['kf_results']['betas_filtered'])
+        self.state_covs_history = model_data.get('state_covs_history', model_data['kf_results']['state_covs_filtered'])
+        
+        saved_config = model_data['config']
+        for key in ['initial_state_covariance', 'observation_covariance', 
+                   'transition_covariance', 'date_column', 'target_column', 'forecast_methods']:
+            if key in saved_config:
+                self.config[key] = saved_config[key]
+        
+        self.is_fitted = True
+        
+        print(f"Модель загружена из {models_dir}")
+        print(f"  Лучший метод: {self.best_method}")
+        print(f"  Признаки: {len(self.feature_cols)}")
+        
+        return self
+    
+    def predict_from_file(self, filepath=None, method=None, save_results=True):
+        """
+        Прогноз на новых данных из файла.
+        
+        Parameters:
+        -----------
+        filepath : str, optional
+            Путь к Excel файлу с признаками.
+            Если не указан, берется из config['forecast_file']
+        method : str, optional
+            Метод прогнозирования β. По умолчанию best_method
+        save_results : bool
+            Сохранять ли результаты в Excel
+        
+        Returns:
+        --------
+        pd.DataFrame с прогнозами
+        
+        Example:
+        --------
+        >>> forecaster = KalmanForecaster.load('saved_models/sugar')
+        >>> predictions = forecaster.predict_from_file('data/future_features.xlsx')
+        >>> print(predictions)
+        """
+        if not self.is_fitted:
+            raise RuntimeError("Модель не обучена и не загружена. Используйте fit() или load()")
+        
+        filepath = filepath or self.config.get('forecast_file')
+        if not filepath:
+            raise ValueError("Укажите путь к файлу с данными для прогноза")
+        
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Файл не найден: {filepath}")
+        
+        method = method or self.best_method
+        if method not in self.AVAILABLE_METHODS:
+            raise ValueError(f"Неизвестный метод: {method}. Доступны: {self.AVAILABLE_METHODS}")
+        
+        print(f"\n{'='*60}")
+        print(f"KALMAN ПРОГНОЗ НА НОВЫХ ДАННЫХ")
+        print(f"{'='*60}")
+        print(f"Файл: {filepath}")
+        print(f"Метод: {method}")
+
+        df = pd.read_excel(filepath)
+        print(f"Загружено строк: {len(df)}")
+        
+        X_forecast, dates = self._prepare_forecast_features(df)
+        
+        beta_forecast = self._forecast_beta(X_forecast.shape[0], method)
+        
+        predictions = np.sum(X_forecast * beta_forecast, axis=1)
+        
+        date_col = self.config['date_column']
+        target_col = self.config['target_column']
+        
+        result_df = pd.DataFrame({
+            date_col: dates,
+            f'{target_col}_predicted': predictions
+        })
+        
+        for i, col in enumerate(self.feature_cols):
+            result_df[f'beta_{col}'] = beta_forecast[:, i]
+        
+        for other_method in self.AVAILABLE_METHODS:
+            if other_method != method:
+                try:
+                    other_beta = self._forecast_beta(X_forecast.shape[0], other_method)
+                    other_pred = np.sum(X_forecast * other_beta, axis=1)
+                    result_df[f'{target_col}_pred_{other_method}'] = other_pred
+                except:
+                    pass
+        
+        print(f"\nПрогноз ({len(predictions)} значений):")
+        print(result_df[[date_col, f'{target_col}_predicted']].head(10).to_string(index=False))
+        
+        if save_results:
+            results_dir = self.config['results_dir']
+            os.makedirs(results_dir, exist_ok=True)
+            
+            output_path = os.path.join(results_dir, 'kalman_forecast_results.xlsx')
+            result_df.to_excel(output_path, index=False)
+            print(f"\nРезультаты сохранены: {output_path}")
+            
+            self._plot_forecast(result_df, method)
+        
+        return result_df
+    
+    def _prepare_forecast_features(self, df):
+        """Подготовка признаков для прогноза"""
+        date_col = self.config['date_column']
+        
+        if date_col in df.columns:
+            df[date_col] = pd.to_datetime(df[date_col])
+            dates = df[date_col].values
+        else:
+            dates = np.arange(len(df))
+        
+        missing = [f for f in self.feature_cols if f not in df.columns]
+        if missing:
+            raise ValueError(f"В файле отсутствуют признаки: {missing}")
+        
+        X = df[self.feature_cols].values
+        
+        valid_mask = ~np.isnan(X).any(axis=1)
+        if not valid_mask.all():
+            print(f"  Удалено строк с NaN: {(~valid_mask).sum()}")
+            X = X[valid_mask]
+            if isinstance(dates, np.ndarray) and len(dates) > valid_mask.sum():
+                dates = dates[valid_mask]
+        
+        print(f"  Подготовлено признаков: {X.shape[1]}")
+        print(f"  Строк для прогноза: {X.shape[0]}")
+        
+        return X, dates
+    
+    def _forecast_beta(self, h, method):
+        """
+        Прогнозирование коэффициентов β на h шагов вперед.
+        
+        Parameters:
+        -----------
+        h : int
+            Горизонт прогноза
+        method : str
+            Метод прогнозирования
+        
+        Returns:
+        --------
+        np.array shape (h, k) - прогноз β
+        """
+        betas_history = self.betas_history
+        k = betas_history.shape[1]
+        kf = self.kf_results['kalman_filter']
+        
+        if method == 'last_beta':
+            return np.tile(betas_history[-1], (h, 1))
+        
+        elif method == 'random_walk':
+            beta_forecast = []
+            current_beta = betas_history[-1]
+            current_cov = self.state_covs_history[-1]
+            
+            for t in range(h):
+                next_beta = kf.transition_matrices @ current_beta
+                next_cov = (kf.transition_matrices @ current_cov @ 
+                           kf.transition_matrices.T + kf.transition_covariance)
+                beta_forecast.append(next_beta)
+                current_beta, current_cov = next_beta, next_cov
+            
+            return np.array(beta_forecast)
+        
+        elif method == 'linear_trend':
+            N = min(20, len(betas_history))
+            beta_recent = betas_history[-N:]
+            t_hist = np.arange(N)
+            t_fut = np.arange(N, N + h)
+            
+            beta_forecast = []
+            for i in range(k):
+                coeffs = np.polyfit(t_hist, beta_recent[:, i], deg=1)
+                beta_forecast.append(np.polyval(coeffs, t_fut))
+            return np.array(beta_forecast).T
+        
+        elif method == 'ar_beta':
+            beta_forecast = []
+            for i in range(k):
+                series = betas_history[:, i]
+                try:
+                    best_aic, best_model = np.inf, None
+                    for p in range(1, min(6, len(series)//3)):
+                        try:
+                            model = AutoReg(series, lags=p, trend='c').fit()
+                            if model.aic < best_aic:
+                                best_aic, best_model = model.aic, model
+                        except:
+                            continue
+                    if best_model:
+                        beta_forecast.append(best_model.forecast(steps=h))
+                    else:
+                        beta_forecast.append(np.repeat(series[-1], h))
+                except:
+                    beta_forecast.append(np.repeat(series[-1], h))
+            return np.array(beta_forecast).T
+        
+        elif method == 'damped_trend':
+            N = min(20, len(betas_history))
+            beta_recent = betas_history[-N:]
+            damping = 0.95
+            
+            beta_forecast = []
+            for i in range(k):
+                t_hist = np.arange(N)
+                coeffs = np.polyfit(t_hist, beta_recent[:, i], deg=1)
+                slope = coeffs[0]
+                last = beta_recent[-1, i]
+                hist_mean = np.mean(betas_history[:, i])
+                
+                forecast_i = []
+                for t in range(1, h + 1):
+                    trend = slope * (1 - damping**t) / (1 - damping)
+                    reversion = (hist_mean - last) * (1 - damping**t)
+                    forecast_i.append(last + trend * 0.5 + reversion * 0.3)
+                beta_forecast.append(forecast_i)
+            return np.array(beta_forecast).T
+        
+        elif method == 'bayesian_shrinkage':
+            N = min(30, len(betas_history))
+            beta_recent = betas_history[-N:]
+            
+            beta_forecast = []
+            for i in range(k):
+                hist_mean = np.mean(betas_history[:, i])
+                hist_std = np.std(betas_history[:, i])
+                t_hist = np.arange(N)
+                coeffs = np.polyfit(t_hist, beta_recent[:, i], deg=1)
+                last = betas_history[-1, i]
+                
+                forecast_i = []
+                for t in range(h):
+                    if t == 0:
+                        beta_t = last
+                    else:
+                        trend = np.polyval(coeffs, N + t)
+                        shrink = min(0.9, 0.3 + 0.02 * t)
+                        beta_t = shrink * hist_mean + (1 - shrink) * trend
+                        beta_t = np.clip(beta_t, hist_mean - 3*hist_std, hist_mean + 3*hist_std)
+                    forecast_i.append(beta_t)
+                beta_forecast.append(forecast_i)
+            return np.array(beta_forecast).T
+        
+        elif method == 'adaptive_ensemble':
+            last = np.tile(betas_history[-1], (h, 1))
+            
+            ar_forecast = []
+            for i in range(k):
+                try:
+                    model = AutoReg(betas_history[:, i], lags=min(3, len(betas_history)//4), trend='c').fit()
+                    ar_forecast.append(model.forecast(steps=h))
+                except:
+                    ar_forecast.append(np.repeat(betas_history[-1, i], h))
+            ar_forecast = np.array(ar_forecast).T
+            
+            N = min(20, len(betas_history))
+            damped_forecast = []
+            for i in range(k):
+                t = np.arange(N)
+                coeffs = np.polyfit(t, betas_history[-N:, i], deg=1)
+                slope = coeffs[0]
+                last_val = betas_history[-1, i]
+                hist_mean = np.mean(betas_history[:, i])
+                
+                forecast_i = []
+                for s in range(1, h + 1):
+                    d = 0.95**s
+                    forecast_i.append(last_val + slope * s * d * 0.5 + (hist_mean - last_val) * (1 - d) * 0.3)
+                damped_forecast.append(forecast_i)
+            damped_forecast = np.array(damped_forecast).T
+            
+            beta_forecast = []
+            for i in range(k):
+                vol = np.std(betas_history[-20:, i]) / (np.abs(np.mean(betas_history[:, i])) + 1e-6)
+                if vol < 0.2:
+                    w = [0.2, 0.5, 0.3]
+                elif vol < 0.5:
+                    w = [0.3, 0.4, 0.3]
+                else:
+                    w = [0.5, 0.3, 0.2]
+                beta_i = w[0] * last[:, i] + w[1] * ar_forecast[:, i] + w[2] * damped_forecast[:, i]
+                beta_forecast.append(beta_i)
+            return np.array(beta_forecast).T
+        
+        else:
+            raise ValueError(f"Unknown method: {method}")
+    
+    def _plot_forecast(self, result_df, method):
+        """График прогноза"""
+        results_dir = self.config['results_dir']
+        date_col = self.config['date_column']
+        target_col = self.config['target_column']
+        
+        fig, axes = plt.subplots(2, 1, figsize=(14, 10))
+        
+        ax = axes[0]
+        pred_col = f'{target_col}_predicted'
+        ax.plot(result_df[date_col], result_df[pred_col], 
+                'b-', linewidth=2, marker='o', markersize=4,
+                label=f'Прогноз ({method})')
+        
+        ax.set_title(f'Kalman прогноз {target_col} (метод: {method})', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Дата', fontsize=12)
+        ax.set_ylabel(target_col, fontsize=12)
+        ax.legend(fontsize=11)
+        ax.grid(True, alpha=0.3)
+        
+        ax = axes[1]
+        beta_cols = [col for col in result_df.columns if col.startswith('beta_')]
+        colors = plt.cm.tab10(np.linspace(0, 1, len(beta_cols)))
+        
+        for col, color in zip(beta_cols, colors):
+            feature_name = col.replace('beta_', '')
+            ax.plot(result_df[date_col], result_df[col], 
+                   label=f'β({feature_name})', linewidth=2, color=color)
+        
+        ax.axhline(0, color='gray', linestyle='--', alpha=0.5)
+        ax.set_title('Прогноз коэффициентов β', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Дата', fontsize=12)
+        ax.set_ylabel('β', fontsize=12)
+        ax.legend(fontsize=9, loc='best')
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(results_dir, 'kalman_forecast_plot.png'), dpi=150)
+        plt.close()
+        
+        print(f"График сохранен: {results_dir}/kalman_forecast_plot.png")
+    
+    def get_beta_stats(self):
+        """
+        Статистика по коэффициентам β.
+        
+        Returns:
+        --------
+        pd.DataFrame со статистикой
+        """
+        if self.betas_train is None:
+            raise RuntimeError("Модель не обучена")
+        
+        stats = {
+            'feature': self.feature_cols,
+            'mean': np.mean(self.betas_train, axis=0),
+            'std': np.std(self.betas_train, axis=0),
+            'min': np.min(self.betas_train, axis=0),
+            'max': np.max(self.betas_train, axis=0),
+            'last': self.betas_train[-1]
+        }
+        
+        return pd.DataFrame(stats)

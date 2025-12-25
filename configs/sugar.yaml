@@ -17,6 +17,8 @@ expert_features:
   - 'Brent'
   - 'DXY'
   - 'Baltic Dry Index'
+  - 'US CPI'
+  - 'USDBRL'
 
 # === ML МОДЕЛЬ ===
 max_features: 10

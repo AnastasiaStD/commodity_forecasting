@@ -1,6 +1,6 @@
 # Commodity Forecasting Library
 
-Библиотека для прогнозирования цен на арго-inputs с использованием машинного обучения и фильтра Калмана.
+Библиотека для прогнозирования цен на сырьевые товары с использованием машинного обучения и фильтра Калмана.
 
 ## Возможности
 
@@ -84,12 +84,40 @@ python run.py --commodity soybean --model all
 python run.py --all
 ```
 
+### Прогноз на новых данных (Inference)
+
+После обучения модели можно делать прогнозы на новых данных:
+
+```bash
+# === ML модель ===
+
+# Прогноз через конфиг
+python run.py --predict --config configs/sugar.yaml --forecast-file data/future_features.xlsx
+
+# Прогноз напрямую из директории с моделями
+python run.py --predict --models-dir saved_models/sugar -f data/future_features.xlsx
+
+# Использовать конкретную модель (не лучшую)
+python run.py --predict -c configs/sugar.yaml -f data/future.xlsx --model-name xgb
+
+# === Kalman модель ===
+
+# Прогноз через конфиг
+python run.py --predict --predict-model kalman --config configs/sugar.yaml -f data/future.xlsx
+
+# Прогноз из директории
+python run.py --predict --predict-model kalman --models-dir saved_models/sugar -f data/future.xlsx
+
+# Использовать конкретный метод (не лучший)
+python run.py --predict --predict-model kalman -c configs/sugar.yaml -f data/future.xlsx --model-name bayesian_shrinkage
+```
+
 ### Python API
 
 ```python
 from forecasting import MLForecaster, KalmanForecaster
 
-# === ML Модель ===
+# === ML Модель - Обучение ===
 ml = MLForecaster(config='configs/sugar.yaml')
 ml.fit()
 ml.save_results()
@@ -99,7 +127,24 @@ ml.summary()
 print(f"Лучшая модель: {ml.best_model}")
 print(f"MAE: {ml.metrics[ml.best_model]['mae']:.3f}")
 
-# === Kalman Модель ===
+# === ML Модель - Прогноз на новых данных ===
+
+# Вариант 1: Загрузка модели из директории
+forecaster = MLForecaster.load('saved_models/sugar')
+predictions = forecaster.predict_from_file('data/future_features.xlsx')
+
+# Вариант 2: Через конфиг
+forecaster = MLForecaster(config='configs/sugar.yaml')
+forecaster.load_model()  # загружает из models_dir в конфиге
+predictions = forecaster.predict_from_file('data/future_features.xlsx')
+
+# Вариант 3: Использовать конкретную модель
+predictions = forecaster.predict_from_file('data/future.xlsx', model_name='catboost')
+
+# Результат - DataFrame с прогнозами
+print(predictions)
+
+# === Kalman Модель - Обучение ===
 kf = KalmanForecaster(config='configs/sugar.yaml')
 kf.fit()
 kf.save_results()
@@ -108,6 +153,27 @@ kf.summary()
 
 print(f"Лучший метод: {kf.best_method}")
 print(f"MAE: {kf.metrics[kf.best_method]['mae']:.3f}")
+
+# === Kalman Модель - Прогноз на новых данных ===
+
+# Вариант 1: Загрузка модели из директории
+forecaster = KalmanForecaster.load('saved_models/sugar')
+predictions = forecaster.predict_from_file('data/future_features.xlsx')
+
+# Вариант 2: Через конфиг
+forecaster = KalmanForecaster(config='configs/sugar.yaml')
+forecaster.load_model()
+predictions = forecaster.predict_from_file('data/future_features.xlsx')
+
+# Вариант 3: Использовать конкретный метод
+predictions = forecaster.predict_from_file('data/future.xlsx', method='bayesian_shrinkage')
+
+# Результат включает прогноз цены и коэффициенты β
+print(predictions)
+
+# Статистика по β
+beta_stats = forecaster.get_beta_stats()
+print(beta_stats)
 ```
 
 ### Конфигурация без YAML
@@ -129,9 +195,11 @@ ml.fit()
 
 ## Формат данных
 
-Входной Excel файл должен содержать:
-- Колонку с датой (по дефольту название dt)
-- Колонку с целевой переменной (цена, по дефолту называется price)
+### Файл для обучения
+
+Excel файл должен содержать:
+- Колонку с датой
+- Колонку с целевой переменной (цена)
 - Колонки с признаками (факторы-драйверы)
 
 Пример:
@@ -141,6 +209,21 @@ ml.fit()
 | 2020-02-01 | 102.3  | 66.1   | 98.1   | 0.24         |
 | ...        | ...    | ...    | ...    | ...          |
 
+### Файл для прогноза (inference)
+
+Excel файл с **теми же признаками**, что использовались при обучении, **без целевой переменной**:
+
+| Date       | Brent  | DXY    | Stock-to-Use |
+|------------|--------|--------|--------------|
+| 2025-01-01 | 75.0   | 104.5  | 0.22         |
+| 2025-02-01 | 76.2   | 105.1  | 0.21         |
+| ...        | ...    | ...    | ...          |
+
+**Важно:**
+- Признаки должны совпадать с теми, что были при обучении
+- Если модель использовала лаги/MA, они будут сгенерированы автоматически
+- Первые N строк могут быть пропущены из-за генерации лагов (где N = максимальный лаг)
+
 ## Конфигурация (YAML)
 
 ```yaml
@@ -148,6 +231,10 @@ ml.fit()
 input_file: 'data/sugar_factors.xlsx'
 date_column: 'Date'
 target_column: 'Sugar Price'
+
+# === ФАЙЛ ДЛЯ ПРОГНОЗА ===
+# Путь к файлу с признаками для прогноза (опционально)
+forecast_file: 'data/sugar_forecast_features.xlsx'
 
 # === ПРИЗНАКИ ===
 features: []  # пусто = все колонки кроме даты и таргета

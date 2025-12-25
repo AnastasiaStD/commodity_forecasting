@@ -3,14 +3,14 @@
 # ============================================================
 
 # === ДАННЫЕ ===
-input_file: '../data/sfoil_factors.xlsx'
+input_file: 'data/sfoil_factors.xlsx'
 date_column: 'dt'
 target_column: 'price'
 
 # === ПРИЗНАКИ ===
 features: []
 
-# Золото - автоматический отбор признаков
+# ПодсМ - автоматический отбор признаков
 expert_features: []
 
 # === ML МОДЕЛЬ ===
@@ -51,7 +51,7 @@ test_size_ratio: 0.1
 val_size_ratio: 0.15
 
 # === ПУТИ ===
-results_dir: 'results/gold'
-models_dir: 'saved_models/gold'
+results_dir: 'results/sf_oil'
+models_dir: 'saved_models/sf_oil'
 
 random_seed: 42

@@ -3,7 +3,7 @@
 # ============================================================
 
 # === ДАННЫЕ ===
-input_file: '../data/milk_factors.xlsx'
+input_file: 'data/milk_factors.xlsx'
 date_column: 'dt'
 target_column: 'price'
 
@@ -11,10 +11,13 @@ target_column: 'price'
 features: []
 
 expert_features:
-  - 'Production'
-  - 'Brent'
-  - 'DXY'
-  - 'Feed Price Index'
+  - 'milk_tonnes_lag9'
+  - 'cpi_trend'
+  - 'rmci_lag12'
+  - 'eurorub' 
+  - 'grp_lag9'
+  - 'wages'
+  - 'wheat_price'
 
 # === ML МОДЕЛЬ ===
 max_features: 10
